@@ -4,6 +4,8 @@ import { logger } from "hono/logger";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import * as schema from "../db/schema";
+import { z } from "zod";
+import { validator } from "hono/validator";
 
 const client = new Client({
   connectionString: process.env.DATABASE_URL,
@@ -12,38 +14,45 @@ const client = new Client({
 const app = new Hono();
 
 client.connect();
+const db = drizzle(client, { schema });
 
 app.use(logger());
-app.get("/", async (c) => {
-  const db = drizzle(client, { schema });
+app.get("/api/v1/user", async (c) => {
   const users = await db.query.user.findMany();
   return c.json(users);
 });
 
-app.post("/", async (c) => {
-  const body = await c.req.parseBody<{
-    name: string;
-    email: string;
-    password: string;
-    role: "admin" | "customer";
-  }>();
-
-  if (!body.name || !body.email || !body.password || !body.role) {
-    return c.json({ error: "Bad Request" }, 400);
-  }
-
-  const db = drizzle(client, { schema });
-  const user = await db
-    .insert(schema.user)
-    .values({
-      name: body.name,
-      email: body.email,
-      password: body.password,
-      role: body.role,
-    })
-    .returning();
-
-  return c.json(user);
+const createUserSchema = z.object({
+  name: z.string(),
+  email: z.string().email(),
+  password: z.string(),
+  role: z.enum(["admin", "customer"]),
 });
+
+app.post(
+  "/api/v1/user",
+  validator("form", (value, c) => {
+    const validatedBody = createUserSchema.safeParse(value);
+    if (!validatedBody.success) {
+      return c.json({ error: validatedBody.error.message }, 400);
+    }
+    return validatedBody.data;
+  }),
+  async (c) => {
+    const { name, email, password, role } = c.req.valid("form");
+
+    const user = await db
+      .insert(schema.user)
+      .values({
+        name,
+        email,
+        password,
+        role,
+      })
+      .returning();
+
+    return c.json(user);
+  }
+);
 
 export default app;
